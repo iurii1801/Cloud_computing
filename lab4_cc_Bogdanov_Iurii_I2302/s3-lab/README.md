@@ -136,6 +136,17 @@ _Amazon S3_ — это объектное хранилище AWS, предназ
 >
 > В данной лабораторной работе использовался **современный вариант — Object Ownership: Bucket owner enforced**, при котором ACL полностью отключены, а все разрешения реализованы через **IAM и Bucket Policy**, что обеспечивает большую безопасность и контроль.
 
+> **Вопрос:**
+>
+> Что означает опция “Block all public access” и зачем нужна данная настройка?
+>
+>**Ответ:**
+>
+>Опция **“Block all public access”** в Amazon S3 полностью запрещает публичный доступ к бакету и его объектам из интернета.
+Она защищает данные от случайного раскрытия, даже если в бакете есть публичные политики или ACL.
+Когда эта опция включена — никакие пользователи вне аккаунта AWS не смогут просматривать или скачивать файлы.
+Эта настройка используется для обеспечения **максимальной безопасности** и предотвращения утечек данных.
+
 #### Создание IAM-пользователя и выдача прав
 
 В этом варианте необходимо создать отдельного пользователя AWS (`s3-uploader`) и дать ему минимальные права работы с бакетами.
@@ -545,3 +556,4 @@ aws s3 cp s3-lab/public/content/logo.png s3://cc-lab4-pub-k01/content/logo.png
 4. [Amazon S3 Bucket Policy Examples](https://docs.aws.amazon.com/AmazonS3/latest/userguide/example-bucket-policies.html) — примеры политик для управления доступом к бакетам S3.
 5. [Amazon S3 Lifecycle Configuration Guide](https://docs.aws.amazon.com/AmazonS3/latest/userguide/object-lifecycle-mgmt.html) — руководство по настройке **Lifecycle-правил** для автоматизации хранения данных.
 6. [Amazon S3 Static Website Hosting](https://docs.aws.amazon.com/AmazonS3/latest/userguide/WebsiteHosting.html) — официальная документация по размещению статических веб-сайтов на платформе S3.
+
