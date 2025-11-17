@@ -1159,3 +1159,702 @@ http://3.127.69.157/index.php
 
 В итоге приложение «Каталог рецептов» полностью перенесено с локального окружения на `Amazon RDS`: все данные хранятся в облачной базе, а операции **создания**, **чтения**, **обновления** и **удаления** выполняются через удалённый `MySQL-инстанс`. Доступ к приложению обеспечивается через EC2-инстанс с настроенным Apache и ограниченными inbound-правилами группы безопасности.
 
+### Шаг 7. Дополнительное задание. Использование Amazon DynamoDB
+
+#### 1. Создание таблицы в Amazon DynamoDB
+
+Необходимо открыть сервис **DynamoDB** → **Tables** → **Create table**.
+
+Заполнить параметры, как показано в таблице:
+
+| Параметр      | Значение                |
+| ------------- | ----------------------- |
+| Table name    | `recipe_notes`          |
+| Partition key | `recipe_id` (Number)    |
+| Sort key      | `note_id` (String)      |
+| Billing mode  | On-demand               |
+| Encryption    | Default (AWS owned key) |
+
+![image](https://i.imgur.com/A72GkoE.png)
+![image](https://i.imgur.com/O6g678q.png)
+
+#### 2. Добавление тестовых записей через AWS Console в таблицу
+
+После создания таблицы нужно вручную добавить записи.
+
+Необходимо перейти по пути **recipe_notes → Explore items → Create item**
+
+**note-1:**
+
+![image](https://i.imgur.com/9ZB34T5.png)
+
+**note-2:**
+
+![image](https://i.imgur.com/zusZziF.png)
+
+После сохранения записей выполняется сканирование таблицы:
+
+![image](https://i.imgur.com/ITXSiLV.png)
+
+В таблице отображаются обе созданные записи.
+
+>**Вопрос:**
+>
+>**Какие преимущества и недостатки использования DynamoDB по сравнению с реляционной базой данных Amazon RDS в вашем случае?**
+>
+>**Ответ:**
+>
+>- **Высокая скорость работы и масштабируемость** — операции чтения/записи по ключу выполняются очень быстро и автоматически масштабируются под нагрузку.
+>- **Полностью управляемый сервис** — не нужно обновлять, настраивать или администрировать сервер БД.
+>- **Подходит для частых мелких изменений** — заметки, комментарии, лайки и подобные структуры эффективно хранятся в DynamoDB.
+>
+>**Недостатки:**
+>
+>- **Нет SQL, JOIN и сложных запросов.**
+  Нельзя легко объединить данные из разных сущностей, как это делается в RDS.
+>- **Строгие требования к проектированию под конкретные запросы.**
+  Сначала решаешь, как будешь читать данные — и только потом выбираешь ключи.
+>- **Сложнее хранить связанные данные.**
+  Для каждой сущности приходится создавать отдельные таблицы и дублировать информацию.
+
+#### 3. Установка AWS SDK на EC2
+
+Для работы с DynamoDB из PHP необходимо установить Composer и пакет `aws/aws-sdk-php`.
+
+**Установка Composer:**
+
+```bash
+php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+sudo php composer-setup.php --install-dir=/usr/local/bin --filename=composer
+rm composer-setup.php
+composer --version
+```
+
+![image](https://i.imgur.com/iyARqoH.png)
+
+**Установка AWS SDK:**
+
+```bash
+composer require aws/aws-sdk-php
+```
+
+![image](https://i.imgur.com/bLvLYn3.png)
+
+#### 4. Подключение DynamoDB в приложении
+
+В папке проекта нужно создать файл `src/dynamodb.php`
+
+```php
+<?php
+// src/dynamodb.php
+// Работа с таблицей recipe_notes в DynamoDB
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use Aws\DynamoDb\DynamoDbClient;
+use Aws\Exception\AwsException;
+
+const DDB_TABLE = 'recipe_notes';
+
+/**
+ * Создаёт клиента DynamoDB.
+ */
+function getDynamoClient(): DynamoDbClient
+{
+    return new DynamoDbClient([
+        'version' => 'latest',
+        'region'  => 'eu-central-1', 
+        'credentials' => [
+            'key'    => 'YOUR_ACCESS_KEY_ID',
+            'secret' => 'YOUR_SECRET_ACCESS_KEY',
+        ],
+    ]);
+}
+
+/**
+ * Создание новой заметки для рецепта.
+ *
+ * @param int    $recipeId ID рецепта из RDS
+ * @param string $text     Текст заметки
+ * @return string|null     ID созданной заметки или null при ошибке / пустом тексте
+ */
+function createNote(int $recipeId, string $text): ?string
+{
+    $text = trim($text);
+    if ($text === '') {
+        return null;
+    }
+
+    $client = getDynamoClient();
+    $noteId = 'note-' . time(); // простой уникальный ID
+
+    try {
+        $client->putItem([
+            'TableName' => DDB_TABLE,
+            'Item'      => [
+                'recipe_id'  => ['N' => (string)$recipeId],
+                'note_id'    => ['S' => $noteId],
+                'text'       => ['S' => $text],
+                'created_at' => ['S' => date('Y-m-d H:i:s')],
+            ],
+        ]);
+
+        return $noteId;
+    } catch (AwsException $e) {
+        // Можно залогировать: error_log($e->getMessage());
+        return null;
+    }
+}
+
+/**
+ * Получение всех заметок по рецепту.
+ *
+ * @param int $recipeId
+ * @return array
+ */
+function getNotes(int $recipeId): array
+{
+    $client = getDynamoClient();
+
+    try {
+        $result = $client->query([
+            'TableName' => DDB_TABLE,
+            'KeyConditionExpression'     => 'recipe_id = :rid',
+            'ExpressionAttributeValues'  => [
+                ':rid' => ['N' => (string)$recipeId],
+            ],
+            // Если нужно отсортировать по note_id по возрастанию:
+            'ScanIndexForward' => true,
+        ]);
+
+        $items = $result->get('Items') ?? [];
+        $notes = [];
+
+        foreach ($items as $item) {
+            $notes[] = [
+                'recipe_id'  => (int)($item['recipe_id']['N'] ?? 0),
+                'note_id'    => $item['note_id']['S'] ?? '',
+                'text'       => $item['text']['S'] ?? '',
+                'created_at' => $item['created_at']['S'] ?? '',
+            ];
+        }
+
+        return $notes;
+    } catch (AwsException $e) {
+        // error_log($e->getMessage());
+        return [];
+    }
+}
+
+/**
+ * Обновление текста заметки.
+ *
+ * @param int    $recipeId
+ * @param string $noteId
+ * @param string $text
+ * @return bool
+ */
+function updateNote(int $recipeId, string $noteId, string $text): bool
+{
+    $text = trim($text);
+    if ($text === '') {
+        return false;
+    }
+
+    $client = getDynamoClient();
+
+    try {
+        $client->updateItem([
+            'TableName' => DDB_TABLE,
+            'Key'       => [
+                'recipe_id' => ['N' => (string)$recipeId],
+                'note_id'   => ['S' => $noteId],
+            ],
+            'UpdateExpression'          => 'SET #t = :text',
+            'ExpressionAttributeNames'  => [
+                '#t' => 'text',
+            ],
+            'ExpressionAttributeValues' => [
+                ':text' => ['S' => $text],
+            ],
+        ]);
+
+        return true;
+    } catch (AwsException $e) {
+        // error_log($e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Удаление заметки.
+ *
+ * @param int    $recipeId
+ * @param string $noteId
+ * @return bool
+ */
+function deleteNote(int $recipeId, string $noteId): bool
+{
+    $client = getDynamoClient();
+
+    try {
+        $client->deleteItem([
+            'TableName' => DDB_TABLE,
+            'Key'       => [
+                'recipe_id' => ['N' => (string)$recipeId],
+                'note_id'   => ['S' => $noteId],
+            ],
+        ]);
+
+        return true;
+    } catch (AwsException $e) {
+        // error_log($e->getMessage());
+        return false;
+    }
+}
+```
+
+Он содержит:
+
+- Подключение AWS SDK
+- Создание клиента DynamoDB
+- CRUD-функции: `createNote()`, `updateNote()`, `deleteNote()`, `getNotes()`
+
+#### 5. Интеграция в приложение (notes.php)
+
+Файл `notes.php` нужно изменить для обработки форм:
+
+- `create` — создаёт note в DynamoDB
+- `update` — обновляет note
+- `delete` — удаляет note
+- GET — загружает список заметок для выбранного рецепта
+
+```php
+<?php
+// public/recipe.php
+require_once __DIR__ . '/../db.php';            // Подключение к MySQL (RDS)
+require_once __DIR__ . '/../src/dynamodb.php'; // Функции работы с DynamoDB
+
+// Получаем ID рецепта из GET, по умолчанию 1
+$recipeId = isset($_GET['recipe_id']) ? (int)$_GET['recipe_id'] : 1;
+
+// Обработка форм заметок (POST)
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $action = $_POST['action'] ?? '';
+    $text   = trim($_POST['text'] ?? '');
+    $noteId = $_POST['note_id'] ?? '';
+
+    try {
+        switch ($action) {
+            case 'create':
+                if ($text !== '') {
+                    createNote($recipeId, $text);
+                }
+                break;
+
+            case 'update':
+                if ($noteId !== '' && $text !== '') {
+                    updateNote($recipeId, $noteId, $text);
+                }
+                break;
+
+            case 'delete':
+                if ($noteId !== '') {
+                    deleteNote($recipeId, $noteId);
+                }
+                break;
+        }
+    } catch (Throwable $e) {
+        // Можно вывести сообщение внизу страницы или залогировать
+        // error_log($e->getMessage());
+    }
+
+    // После POST лучше сделать редирект, чтобы избежать повторной отправки формы
+    header('Location: recipe.php?recipe_id=' . $recipeId);
+    exit;
+}
+
+// Загрузка рецепта из RDS (MySQL)
+$stmt = $pdo->prepare('SELECT * FROM recipes WHERE id = :id');
+$stmt->execute(['id' => $recipeId]);
+$recipe = $stmt->fetch(PDO::FETCH_ASSOC);
+
+if (!$recipe) {
+    http_response_code(404);
+    echo 'Рецепт не найден';
+    exit;
+}
+
+// Загрузка заметок из DynamoDB
+$notes = getNotes($recipeId);
+?>
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <title><?= htmlspecialchars($recipe['title']) ?></title>
+</head>
+<body>
+    <h1>Последние рецепты</h1>
+
+    <h2><?= htmlspecialchars($recipe['title']) ?></h2>
+
+    <p><strong>Категория:</strong>
+        <?= htmlspecialchars($recipe['category'] ?? '') ?>
+    </p>
+
+    <p><strong>Ингредиенты:</strong><br>
+        <?= nl2br(htmlspecialchars($recipe['ingredients'] ?? '')) ?>
+    </p>
+
+    <p><strong>Описание:</strong><br>
+        <?= nl2br(htmlspecialchars($recipe['description'] ?? '')) ?>
+    </p>
+
+    <p><strong>Добавлен:</strong>
+        <?= htmlspecialchars($recipe['created_at'] ?? '') ?>
+    </p>
+
+    <hr>
+
+    <!-- Блок заметок из DynamoDB -->
+    <h2>Заметки к рецепту (DynamoDB)</h2>
+
+    <?php if (!empty($notes)): ?>
+        <ul>
+            <?php foreach ($notes as $note): ?>
+                <li style="margin-bottom: 12px;">
+                    <form method="post" style="margin-bottom: 4px;">
+                        <textarea name="text" rows="2" cols="80"><?= htmlspecialchars($note['text']) ?></textarea><br>
+                        <input type="hidden" name="note_id"   value="<?= htmlspecialchars($note['note_id']) ?>">
+                        <button type="submit" name="action" value="update">Обновить</button>
+                        <button type="submit" name="action" value="delete">Удалить</button>
+                    </form>
+                    <small>
+                        ID: <?= htmlspecialchars($note['note_id']) ?>,
+                        создана: <?= htmlspecialchars($note['created_at']) ?>
+                    </small>
+                </li>
+            <?php endforeach; ?>
+        </ul>
+    <?php else: ?>
+        <p>Пока нет заметок.</p>
+    <?php endif; ?>
+
+    <h3>Добавить заметку</h3>
+    <form method="post">
+        <textarea name="text" rows="2" cols="80"></textarea><br>
+        <button type="submit" name="action" value="create">Добавить</button>
+    </form>
+
+    <hr>
+
+    <p><a href="/recipe/create.php">Добавить новый рецепт</a></p>
+    <p><a href="/recipe/index.php">Все рецепты</a></p>
+</body>
+</html>
+```
+
+>**Вопрос:**
+>
+>**Какие сложности вы столкнулись при проектировании данных для DynamoDB по сравнению с реляционной моделью данных в Amazon RDS?**
+>
+>**Ответ:**
+>
+>- **Необходимо заранее продумать структуру запросов.**
+  В отличие от SQL, где можно гибко фильтровать и объединять данные, DynamoDB требует заранее выбрать правильный Partition Key и Sort Key.
+>- **Отсутствие связей между таблицами.**
+  Нет FOREIGN KEY и нормальных JOIN, поэтому связанные данные (например, заметки и рецепт) нужно связывать вручную по идентификатору.
+>- **Хранение данных в одной партиции.**
+  Все заметки хранятся под одним ключом `recipe_id`, поэтому нужно следить за тем, чтобы партиции не становились слишком «тяжёлыми».
+>- **Денормализация.**
+  Иногда приходится дублировать данные, чтобы быстро получать нужные значения — это необычно после реляционной модели.
+
+#### 6. Сценарий совместного использования RDS и DynamoDB
+
+В одном приложении целесообразно использовать **обе** базы так:
+
+- **Amazon RDS**:
+
+  - Основное «ядро» данных: таблицы `users`, `recipes`, `categories`, `ingredients`.
+  - Используется для:
+
+    - регистрации/авторизации пользователей,
+    - выборки списка рецептов по фильтрам (категория, сложность, время приготовления),
+    - генерации отчётов и статистики.
+
+- **Amazon DynamoDB**:
+
+  - Хранит динамические и объёмные данные:
+
+    - заметки к рецептам (`recipe_notes`),
+    - потенциально лайки, комментарии, просмотры, историю изменений и др.
+  - Используется там, где нужна:
+
+    - высокая скорость записи и чтения,
+    - гибкое масштабирование при росте нагрузки.
+
+**Преимущества такого подхода:**
+
+- Не перегружаем RDS большим количеством мелких операций (заметки/комментарии/лайки).
+- Сохраняем удобство SQL и реляционной модели для основной логики.
+- Получаем производительность и масштабируемость DynamoDB для «быстрых» данных.
+
+### Шаг X. Дополнительное задание: автоматизация создания Security Group и EC2-инстанса с помощью Terraform
+
+Для получения высшей оценки было выполнено дополнительное задание — автоматизация развёртывания виртуальной машины EC2 и Security Group с помощью инструмента **Terraform**. В данном шаге описан весь процесс: установка Terraform, подготовка конфигурации и создание ресурсов в AWS.
+
+#### 1. Установка Terraform на EC2
+
+Для начала необходимо установить Terraform на виртуальную машину:
+
+```bash
+sudo yum update -y
+sudo yum install -y yum-utils
+sudo yum-config-manager --add-repo https://rpm.releases.hashicorp.com/AmazonLinux/hashicorp.repo
+sudo yum -y install terraform
+terraform -version
+```
+
+После установки Terraform отобразил свою версию.
+
+![image](https://i.imgur.com/MiTTm0i.png)
+![image](https://i.imgur.com/t3w0i21.png)
+
+#### 2. Создание рабочей директории Terraform
+
+Далее необходимо подготовить отдельную директорию, где будут храниться конфигурации:
+
+```bash
+mkdir terraform-ec2
+cd terraform-ec2
+pwd
+ls -la
+```
+
+![image](https://i.imgur.com/EXDUarE.png)
+
+#### 3. Создание файлов `variables.tf` и `main.tf`
+
+Для удобства конфигурация вынесена в два файла:
+
+**Файл `variables.tf`** содержит параметры:
+
+- регион AWS
+- профиль CLI
+- ID VPC
+- ID подсети
+- AMI
+- тип EC2-инстанса
+- имя SSH-ключа
+
+```tf
+# Регион AWS, где будут создаваться ресурсы
+variable "aws_region" {
+  description = "AWS region"
+  type        = string
+  default     = "eu-central-1" # Frankfurt
+}
+
+# Профиль AWS CLI (чтобы не писать ключи в коде)
+variable "aws_profile" {
+  description = "AWS CLI profile name"
+  type        = string
+  default     = "default"
+}
+
+# ID VPC, в которой создаются ресурсы
+variable "vpc_id" {
+  description = "VPC ID where EC2 instance and Security Group will be created"
+  type        = string
+}
+
+# ID подсети
+variable "subnet_id" {
+  description = "Subnet ID"
+  type        = string
+}
+
+# AMI образ для EC2
+variable "ami_id" {
+  description = "AMI ID for EC2"
+  type        = string
+}
+
+# Тип создаваемого EC2 инстанса
+variable "instance_type" {
+  description = "Тип EC2 инстанса"
+  type        = string
+}
+
+# Имя SSH-ключа
+variable "key_name" {
+  description = "Имя SSH ключа"
+  type        = string
+}
+```
+
+**Файл `main.tf`** содержит ресурсы:
+
+- Security Group с открытыми портами (SSH/HTTP)
+- EC2-инстанс в выбранной подсети
+
+```tf
+provider "aws" {
+  region  = var.aws_region
+  profile = var.aws_profile
+}
+
+# Security Group
+resource "aws_security_group" "lab_sg" {
+  name        = "lab-web-sg"
+  description = "Security group for EC2 created via Terraform"
+  vpc_id      = var.vpc_id
+
+  ingress {
+    description = "Allow SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Allow HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "lab-web-sg"
+  }
+}
+
+# EC2 instance
+resource "aws_instance" "web_server" {
+  ami                    = var.ami_id
+  instance_type          = var.instance_type
+  subnet_id              = var.subnet_id
+  key_name               = var.key_name
+  vpc_security_group_ids = [aws_security_group.lab_sg.id]
+  associate_public_ip_address = true
+
+  tags = {
+    Name = "lab-web-server"
+  }
+}
+```
+
+#### 4. Инициализация Terraform
+
+Перед запуском конфигурации необходимо выполнить инициализацию:
+
+```bash
+terraform init
+```
+
+![image](https://i.imgur.com/zgPjMw2.png)
+
+#### 5. Валидация конфигурации
+
+Проверка корректности файлов:
+
+```bash
+terraform validate
+```
+
+![image](https://i.imgur.com/722tuhf.png)
+
+#### 6. Настройка AWS CLI
+
+Для работы Terraform использует учётные данные AWS:
+
+```bash
+aws configure
+aws sts get-caller-identity
+```
+
+#### 6.1. Заполнение входных переменных Terraform
+
+После настройки AWS CLI нужно передать Terraform значения переменных:
+
+![image](https://i.imgur.com/AwQIcCB.png)
+
+Здесь указываются:
+- регион
+- VPC
+- подсеть
+- AMI
+- ключ
+- тип EC2-инстанса
+
+Эти параметры Terraform возьмёт для создания инфраструктуры.
+
+#### 7. Просмотр плана развёртывания
+
+Команда:
+
+```bash
+terraform plan
+```
+
+Показывает, какие ресурсы будут созданы:
+
+- Security Group
+- EC2 Instance
+
+![image](https://i.imgur.com/m3WlN3Q.png)
+![image](https://i.imgur.com/vzXVtAy.png)
+
+#### 8. Создание ресурсов в AWS
+
+Команда:
+
+```bash
+terraform apply
+```
+
+После запроса подтверждения необходимо ввести:
+
+```
+yes
+```
+
+Terraform создаёт виртуальную машину и отображает её ID.
+
+![image](https://i.imgur.com/xleYCfV.png)
+![image](https://i.imgur.com/TCpC9Vn.png)
+
+Дополнительное условие выполнено:
+**EC2-инстанс и Security Group были успешно развёрнуты средствами Terraform.**
+
+## Вывод
+
+**В ходе лабораторной работы была создана полноценная облачная инфраструктура на AWS:** настроены VPC, подсети, группы безопасности, развернут экземпляр MySQL в Amazon RDS и виртуальная машина EC2 для работы с базой данных.
+
+Я подключился к базе, создал таблицы, выполнил CRUD-операции и проверил работу Read Replica, увидев механизм асинхронной репликации и ограничение режима *read-only*.
+
+**Затем я подключил к RDS своё PHP-приложение «Каталог рецептов»**, перенёс всю работу с данными в облако и успешно реализовал операции создания, чтения, обновления и удаления через удалённый MySQL.
+
+**Дополнительно была изучена NoSQL-модель:** создана таблица DynamoDB, добавлены записи и выполнена интеграция в приложение через AWS SDK.
+
+**Завершающим этапом стала автоматизация развёртывания инфраструктуры через Terraform**, что позволило полностью автоматизировать создание Security Group и EC2-инстанса.
+
+В итоге лабораторная работа дала цельное понимание различий и возможностей реляционных и нереляционных баз в AWS и практических навыков их применения в реальном веб-приложении.
+
+## Библиография
+
+1. [Amazon RDS Documentation](https://docs.aws.amazon.com/rds/index.html) — официальная документация по работе с **Amazon Relational Database Service**, созданию инстансов, настройке доступа и репликации.
+2. [Amazon DynamoDB Documentation](https://docs.aws.amazon.com/dynamodb/index.html) — справочник по работе с NoSQL-хранилищем **DynamoDB**, проектированию таблиц и API-взаимодействию.
+3. [AWS CLI Command Reference](https://docs.aws.amazon.com/cli/latest/index.html) — официальный справочник команд **AWS Command Line Interface**, использованных в работе.
+4. [Terraform AWS Provider Documentation](https://registry.terraform.io/providers/hashicorp/aws/latest/docs) — руководство по ресурсу `aws_instance`, `aws_security_group` и настройке провайдера Terraform.
+5. [MariaDB / MySQL Official Documentation](https://dev.mysql.com/doc/) — официальное руководство по SQL-командам, структуре таблиц и работе с реляционными БД.
