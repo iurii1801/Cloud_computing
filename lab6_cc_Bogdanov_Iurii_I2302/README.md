@@ -171,7 +171,7 @@ resource "aws_security_group" "web_sg" {
   description = "Allow HTTP and SSH"
   vpc_id      = aws_vpc.lab6_vpc.id
 
-  # SSH — по-хорошему тут должен быть твой IP, но для удобства сейчас 0.0.0.0/0
+  # SSH 
   ingress {
     description = "SSH"
     from_port   = 22
@@ -214,7 +214,7 @@ resource "aws_instance" "web_server" {
 
   key_name = "lab6-key"
 
-  # UserData — скрипт init.sh, который тебе дал препод
+  # UserData — скрипт init.sh
   user_data = file("${path.module}/init.sh")
   user_data_replace_on_change = true
   tags = {
@@ -1440,3 +1440,4 @@ AWS перестаёт начислять стоимость, среда очи�
 3. **[Amazon CloudWatch Documentation](https://docs.aws.amazon.com/cloudwatch/index.html)** — документация по мониторингу AWS-ресурсов, настройке метрик, графиков загрузки CPU, тревог (Alarms) и интеграции с Auto Scaling.
 4. **[Amazon VPC Documentation](https://docs.aws.amazon.com/vpc/index.html)** — справочник по созданию **VPC**, подсетей, маршрутов, Internet Gateway, Security Groups и сетевой архитектуре, использованной для развертывания приложения.
 5. **[Amazon Auto Scaling Documentation](https://docs.aws.amazon.com/autoscaling/index.html)** — официальное руководство по настройке **Auto Scaling Group**, политик масштабирования (Target Tracking), параметра warm-up и автоматическому scale-in/scale-out.
+
